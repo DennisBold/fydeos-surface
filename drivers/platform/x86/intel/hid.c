@@ -94,6 +94,10 @@ static const struct key_entry intel_array_keymap[] = {
 	{ KE_IGNORE, 0xC7, { KEY_VOLUMEDOWN } },              /* Release */
 	{ KE_KEY,    0xC8, { KEY_ROTATE_LOCK_TOGGLE } },      /* Press */
 	{ KE_IGNORE, 0xC9, { KEY_ROTATE_LOCK_TOGGLE } },      /* Release */
+	{ KE_SW,     0xCA, { .sw = { SW_DOCK, 1 } } },        /* Docked */
+	{ KE_SW,     0xCB, { .sw = { SW_DOCK, 0 } } },        /* Undocked */
+	{ KE_SW,     0xCC, { .sw = { SW_TABLET_MODE, 1 } } }, /* Tablet */
+	{ KE_SW,     0xCD, { .sw = { SW_TABLET_MODE, 0 } } }, /* Laptop */
 	{ KE_KEY,    0xCE, { KEY_POWER } },                   /* Press */
 	{ KE_IGNORE, 0xCF, { KEY_POWER } },                   /* Release */
 	{ KE_END },
