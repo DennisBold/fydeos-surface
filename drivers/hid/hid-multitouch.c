@@ -150,6 +150,11 @@ struct mt_application {
 	int prev_scantime;		/* scantime reported previously */
 
 	bool have_contact_count;
+
+	bool pressure_emulate;	/* synthesize ABS_MT_PRESSURE for touchpads
+				 * that don't report a real pressure value */
+	__s32 fake_pressure;
+	int pressure_step;
 };
 
 struct mt_class {
@@ -225,6 +230,7 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 #define MT_CLS_WIN_8_DISABLE_WAKEUP		0x0016
 #define MT_CLS_WIN_8_NO_STICKY_FINGERS		0x0017
 #define MT_CLS_WIN_8_FORCE_MULTI_INPUT_NSMU	0x0018
+#define MT_CLS_GOODIX				0x0019
 
 /* vendor specific classes */
 #define MT_CLS_3M				0x0101
@@ -301,6 +307,14 @@ static const struct mt_class mt_classes[] = {
 		.quirks = MT_QUIRK_VALID_IS_INRANGE |
 			MT_QUIRK_SLOT_IS_CONTACTNUMBER },
 	{ .name = MT_CLS_WIN_8,
+		.quirks = MT_QUIRK_ALWAYS_VALID |
+			MT_QUIRK_IGNORE_DUPLICATES |
+			MT_QUIRK_HOVERING |
+			MT_QUIRK_CONTACT_CNT_ACCURATE |
+			MT_QUIRK_STICKY_FINGERS |
+			MT_QUIRK_WIN8_PTP_BUTTONS,
+		.export_all_inputs = true },
+	{ .name = MT_CLS_GOODIX,
 		.quirks = MT_QUIRK_ALWAYS_VALID |
 			MT_QUIRK_IGNORE_DUPLICATES |
 			MT_QUIRK_HOVERING |
@@ -1049,6 +1063,23 @@ static int mt_touch_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 						     MT_TOOL_PALM, 0, 0);
 
 			MT_STORE_FIELD(confidence_state);
+
+			/* Some Win8 touchpads never report a real pressure
+			 * value, which breaks tap-to-click / gesture code
+			 * that expects one. Synthesize a fake, cycling
+			 * pressure value for those instead.
+			 */
+			if (app->application == HID_DG_TOUCHPAD &&
+			    (cls->name == MT_CLS_DEFAULT ||
+			     cls->name == MT_CLS_WIN_8) &&
+			    !test_bit(ABS_MT_PRESSURE, hi->input->absbit)) {
+				app->pressure_emulate = true;
+				app->fake_pressure = 0;
+				input_set_abs_params(hi->input, ABS_MT_PRESSURE,
+						     0, 255, 0, 0);
+				mt_store_field(hdev, app, &app->fake_pressure,
+					       offsetof(struct mt_usages, p));
+			}
 			return 1;
 		case HID_DG_TIPSWITCH:
 			if (field->application != HID_GD_SYSTEM_MULTIAXIS)
@@ -1376,6 +1407,16 @@ static int mt_process_slot(struct mt_device *td, struct input_dev *input,
 
 		if (td->is_haptic_touchpad)
 			hid_haptic_pressure_increase(td->haptic, *slot->p);
+
+		if (app->pressure_emulate && slot->x) {
+			if (app->fake_pressure > 130)
+				app->pressure_step = -10;
+			else if (app->fake_pressure < 60)
+				app->pressure_step = 30;
+			else if (app->fake_pressure > 80)
+				app->pressure_step = 5;
+			app->fake_pressure += app->pressure_step;
+		}
 
 		x = hdev->quirks & HID_QUIRK_X_INVERT ?
 			input_abs_get_max(input, ABS_MT_POSITION_X) - *slot->x :
@@ -2895,6 +2936,52 @@ static const struct hid_device_id mt_devices[] = {
 	{ .driver_data = MT_CLS_NSMU,
 		HID_DEVICE(BUS_I2C, HID_GROUP_MULTITOUCH_WIN_8,
 			   I2C_VENDOR_ID_HANTICK, I2C_PRODUCT_ID_HANTICK_5288) },
+
+	/* Microsoft Type/Touch Covers and Surface accessory keyboards */
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TOUCH_COVER_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE3_COVER) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3_JP) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_4) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_4_1) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_BOOK) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_BOOK_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_GO) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY,
+			USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_SURFACE_VHF) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_POWER_COVER) },
+
+	/* Goodix/Weibu Win8 touchpad */
+	{ .driver_data = MT_CLS_GOODIX,
+		HID_DEVICE(BUS_I2C, HID_GROUP_MULTITOUCH_WIN_8,
+			I2C_VENDOR_ID_GOODIX, I2C_DEVICE_ID_WEIBU) },
 
 	/* Generic MT device */
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_MULTITOUCH, HID_ANY_ID, HID_ANY_ID) },
