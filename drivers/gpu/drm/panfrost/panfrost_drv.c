@@ -325,6 +325,8 @@ panfrost_ioctl_wait_bo(struct drm_device *dev, void *data,
 				    true, timeout);
 	if (!ret)
 		ret = timeout ? -ETIMEDOUT : -EBUSY;
+	else if (ret > 0)
+		ret = 0;
 
 	drm_gem_object_put(gem_obj);
 
@@ -799,22 +801,22 @@ static const struct panfrost_compatible mediatek_mt8192_data = {
 
 static const struct of_device_id dt_match[] = {
 	/* Set first to probe before the generic compatibles */
-	{ .compatible = "amlogic,meson-gxm-mali",
+	{ .compatible = "amlogic,meson-gxm-mali-CHROMIUM",
 	  .data = &amlogic_data, },
-	{ .compatible = "amlogic,meson-g12a-mali",
+	{ .compatible = "amlogic,meson-g12a-mali-CHROMIUM",
 	  .data = &amlogic_data, },
-	{ .compatible = "arm,mali-t604", .data = &default_data, },
-	{ .compatible = "arm,mali-t624", .data = &default_data, },
-	{ .compatible = "arm,mali-t628", .data = &default_data, },
-	{ .compatible = "arm,mali-t720", .data = &default_data, },
-	{ .compatible = "arm,mali-t760", .data = &default_data, },
-	{ .compatible = "arm,mali-t820", .data = &default_data, },
-	{ .compatible = "arm,mali-t830", .data = &default_data, },
-	{ .compatible = "arm,mali-t860", .data = &default_data, },
-	{ .compatible = "arm,mali-t880", .data = &default_data, },
-	{ .compatible = "arm,mali-bifrost", .data = &default_data, },
+	{ .compatible = "arm,mali-t604-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t624-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t628-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t720-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t760-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t820-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t830-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t860-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-t880-CHROMIUM", .data = &default_data, },
+	{ .compatible = "arm,mali-bifrost-CHROMIUM", .data = &default_data, },
 	{ .compatible = "arm,mali-valhall-jm", .data = &default_data, },
-	{ .compatible = "mediatek,mt8183-mali", .data = &mediatek_mt8183_data },
+	{ .compatible = "mediatek,mt8183-mali-CHROMIUM", .data = &mediatek_mt8183_data },
 	{ .compatible = "mediatek,mt8183b-mali", .data = &mediatek_mt8183_b_data },
 	{ .compatible = "mediatek,mt8186-mali", .data = &mediatek_mt8186_data },
 	{ .compatible = "mediatek,mt8188-mali", .data = &mediatek_mt8188_data },

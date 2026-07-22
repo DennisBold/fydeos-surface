@@ -73,6 +73,7 @@
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
 
+#include <trace/events/fs_trace.h>
 #include <trace/events/task.h>
 #include "internal.h"
 

@@ -3527,7 +3527,7 @@ static void CalculateUrgentBurstFactor(
 
 }
 
-static void CalculateDCFCLKDeepSleep(
+static noinline_for_stack void CalculateDCFCLKDeepSleep(
 	const struct dml2_display_cfg *display_cfg,
 	unsigned int NumberOfActiveSurfaces,
 	unsigned int BytePerPixelY[],

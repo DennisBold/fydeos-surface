@@ -6,6 +6,13 @@
  *  Copyright (C) 2015  Intel Corporation
  */
 
+/* List of CNVIs */
+#define BTINTEL_CNVI_BLAZARI	0x900
+#define BTINTEL_CNVI_GAP	0x910
+
+/* CNVR */
+#define BTINTEL_CNVR_FMP2	0x910
+
 /* List of tlv type */
 enum {
 	INTEL_TLV_CNVI_TOP = 0x10,
@@ -56,6 +63,7 @@ struct intel_tlv {
 #define BTINTEL_CNVI_BLAZARIW		0x901
 #define BTINTEL_CNVI_GAP		0x910
 #define BTINTEL_CNVI_BLAZARU		0x930
+ #define BTINTEL_CNVI_SCP		0xA00
 
 #define BTINTEL_IMG_BOOTLOADER		0x01	/* Bootloader image */
 #define BTINTEL_IMG_IML			0x02	/* Intermediate image */
@@ -164,6 +172,38 @@ struct hci_ppag_enable_cmd {
 #define INTEL_TLV_DEBUG_EXCEPTION	0x02
 #define INTEL_TLV_TEST_EXCEPTION	0xDE
 
+struct btintel_cp_ddc_write {
+	u8	len;
+	__le16	id;
+	u8	data[];
+} __packed;
+
+/* Bluetooth SAR feature (BRDS), Revision 0 */
+struct btintel_sar {
+	u8	revision;
+	u32	bt_sar_bios; /* Mode of SAR control to be used, 1:enabled in bios */
+	u8	br;
+	u8	edr2;
+	u8      edr3;
+	u8      le;
+	u8      le_2mhz;
+	u8      le_lr;
+} __packed;
+
+/* Bluetooth SAR feature (BRDS), Revision 1 */
+struct btintel_sar_inc_pwr {
+	u8	revision;
+	u32	bt_sar_bios;
+	u32	inc_power_mode;  /* Increased power mode */
+	u8	sar_2400_chain_a; /* Sar power restriction LB */
+	u8	br;
+	u8	edr2;
+	u8	edr3;
+	u8	le;
+	u8	le_2mhz;
+	u8	le_lr;
+} __packed;
+
 #define INTEL_HW_PLATFORM(cnvx_bt)	((u8)(((cnvx_bt) & 0x0000ff00) >> 8))
 #define INTEL_HW_VARIANT(cnvx_bt)	((u8)(((cnvx_bt) & 0x003f0000) >> 16))
 #define INTEL_CNVX_TOP_TYPE(cnvx_top)	((cnvx_top) & 0x00000fff)
@@ -174,6 +214,7 @@ enum {
 	INTEL_BOOTLOADER,
 	INTEL_DOWNLOADING,
 	INTEL_FIRMWARE_LOADED,
+	INTEL_FIRMWARE_VERIFY_FAILED,
 	INTEL_FIRMWARE_FAILED,
 	INTEL_BOOTING,
 	INTEL_BROKEN_INITIAL_NCMD,
@@ -254,6 +295,8 @@ int btintel_shutdown_combined(struct hci_dev *hdev);
 void btintel_hw_error(struct hci_dev *hdev, u8 code);
 void btintel_print_fseq_info(struct hci_dev *hdev);
 int btintel_diagnostics(struct hci_dev *hdev, struct sk_buff *skb);
+bool btintel_is_quality_report_evt(struct sk_buff *skb);
+bool btintel_pull_quality_report_data(struct sk_buff *skb);
 #else
 
 static inline int btintel_check_bdaddr(struct hci_dev *hdev)
@@ -386,6 +429,16 @@ static inline void btintel_hw_error(struct hci_dev *hdev, u8 code)
 
 static inline void btintel_print_fseq_info(struct hci_dev *hdev)
 {
+}
+
+static inline bool btintel_is_quality_report_evt(struct sk_buff *skb)
+{
+	return false;
+}
+
+static inline bool btintel_pull_quality_report_data(struct sk_buff *skb)
+{
+	return false;
 }
 
 static inline int btintel_diagnostics(struct hci_dev *hdev, struct sk_buff *skb)

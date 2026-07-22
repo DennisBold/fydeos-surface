@@ -68,6 +68,7 @@ struct sco_pinfo {
 	bdaddr_t	dst;
 	__u32		flags;
 	__u16		setting;
+	__u32		wbs_pkt_len;
 	struct bt_codec codec;
 	struct sco_conn	*conn;
 };
@@ -321,6 +322,7 @@ static int sco_connect(struct sock *sk)
 		sco_sock_set_timer(sk, sk->sk_sndtimeo);
 	}
 
+	sco_pi(sk)->wbs_pkt_len = hdev->wbs_pkt_len;
 	release_sock(sk);
 
 unlock:
@@ -978,7 +980,8 @@ static int sco_sock_setsockopt(struct socket *sock, int level, int optname,
 
 		codecs = (void *)buffer;
 
-		if (codecs->num_codecs > 1) {
+		if (codecs->num_codecs != 1 ||
+		    optlen < struct_size(codecs, codecs, codecs->num_codecs)) {
 			hci_dev_put(hdev);
 			err = -EINVAL;
 			break;
@@ -1131,7 +1134,7 @@ static int sco_sock_getsockopt(struct socket *sock, int level, int optname,
 			break;
 		}
 
-		if (put_user(sco_pi(sk)->conn->mtu, (u32 __user *)optval))
+		if (put_user(sco_pi(sk)->wbs_pkt_len, (u32 __user *)optval))
 			err = -EFAULT;
 		break;
 
