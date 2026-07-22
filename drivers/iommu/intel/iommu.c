@@ -54,13 +54,6 @@
 		((pdev)->vendor == PCI_VENDOR_ID_INTEL && (pdev)->device == 0x34E4) \
 	)
 
-#define IS_INTEL_IPU(pdev) ((pdev)->vendor == PCI_VENDOR_ID_INTEL &&	\
-			   ((pdev)->device == 0x9a19 ||		\
-			    (pdev)->device == 0x9a39 ||		\
-			    (pdev)->device == 0x4e19 ||		\
-			    (pdev)->device == 0x465d ||		\
-			    (pdev)->device == 0x1919))
-
 #define IOAPIC_RANGE_START	(0xfee00000)
 #define IOAPIC_RANGE_END	(0xfeefffff)
 #define IOVA_START_ADDR		(0x1000)
