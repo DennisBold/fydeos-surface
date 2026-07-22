@@ -2320,10 +2320,39 @@ mwifiex_cfg80211_assoc(struct mwifiex_private *priv, size_t ssid_len,
 
 	/* Now handle infra mode. "sme" is valid for infra mode only */
 	if (sme->auth_type == NL80211_AUTHTYPE_AUTOMATIC) {
-		auth_type = NL80211_AUTHTYPE_OPEN_SYSTEM;
+		auth_type = WLAN_AUTH_OPEN;
 		priv->sec_info.is_authtype_auto = 1;
 	} else {
-		auth_type = sme->auth_type;
+		/* nl80211_auth_type and the driver's internal WLAN_AUTH_*
+		 * values are numerically different from SAE onwards
+		 * (e.g. NL80211_AUTHTYPE_SAE == 4, WLAN_AUTH_SAE == 3), so
+		 * the enum needs translating rather than being stored as-is.
+		 * Otherwise priv->sec_info.authentication_mode never compares
+		 * equal to WLAN_AUTH_SAE later on, the association command
+		 * TLV silently falls back to open-system authentication, and
+		 * WPA3/SAE connections fail on hardware that doesn't use the
+		 * host-MLME path (e.g. mwifiex 88W8897).
+		 */
+		switch (sme->auth_type) {
+		case NL80211_AUTHTYPE_OPEN_SYSTEM:
+			auth_type = WLAN_AUTH_OPEN;
+			break;
+		case NL80211_AUTHTYPE_SHARED_KEY:
+			auth_type = WLAN_AUTH_SHARED_KEY;
+			break;
+		case NL80211_AUTHTYPE_FT:
+			auth_type = WLAN_AUTH_FT;
+			break;
+		case NL80211_AUTHTYPE_NETWORK_EAP:
+			auth_type = WLAN_AUTH_LEAP;
+			break;
+		case NL80211_AUTHTYPE_SAE:
+			auth_type = WLAN_AUTH_SAE;
+			break;
+		default:
+			auth_type = sme->auth_type;
+			break;
+		}
 	}
 
 	if (sme->crypto.n_ciphers_pairwise) {
