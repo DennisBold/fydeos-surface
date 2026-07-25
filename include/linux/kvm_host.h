@@ -167,6 +167,7 @@ static inline bool kvm_is_error_gpa(gpa_t gpa)
 #define KVM_REQ_VM_DEAD			(1 | KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_UNBLOCK			2
 #define KVM_REQ_DIRTY_RING_SOFT_FULL	3
+#define KVM_REQ_SUSPEND_TIME_ADJ	5
 #define KVM_REQUEST_ARCH_BASE		8
 
 /*
@@ -370,6 +371,12 @@ struct kvm_vcpu {
 		spinlock_t lock;
 	} async_pf;
 #endif
+
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+	u64 suspend_time_ns;
+	spinlock_t suspend_time_ns_lock;
+#endif
+	bool suspended;
 
 #ifdef CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT
 	/*
@@ -877,6 +884,13 @@ struct kvm {
 	struct xarray mem_attr_array;
 #endif
 	char stats_id[KVM_STATS_NAME_SIZE];
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+	u64 suspend_time_ns;
+	spinlock_t suspend_time_ns_lock;
+	u64 base_offs_boot_ns;
+#endif
+	u64 last_suspend_duration;
+	u64 suspended_time;
 };
 
 #define kvm_err(fmt, ...) \
@@ -2598,5 +2612,41 @@ void kvm_disable_virtualization(void);
 static inline int kvm_enable_virtualization(void) { return 0; }
 static inline void kvm_disable_virtualization(void) { }
 #endif
+
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+bool virt_suspend_time_enabled(struct kvm *kvm);
+void kvm_write_suspend_time(struct kvm *kvm);
+int kvm_init_suspend_time_ghc(struct kvm *kvm, gpa_t gpa);
+static inline u64 kvm_total_suspend_time(struct kvm *kvm)
+{
+	return ktime_get_offs_boot_ns() - kvm->base_offs_boot_ns;
+}
+
+static inline u64 vcpu_suspend_time_injected(struct kvm_vcpu *vcpu)
+{
+	return vcpu->suspend_time_ns;
+}
+#else
+static inline bool virt_suspend_time_enabled(struct kvm *kvm)
+{
+	return 0;
+}
+static inline void kvm_write_suspend_time(struct kvm *kvm)
+{
+}
+static inline int kvm_init_suspend_time_ghc(struct kvm *kvm, gpa_t gpa)
+{
+	return 1;
+}
+static inline u64 kvm_total_suspend_time(struct kvm *kvm)
+{
+	return 0;
+}
+
+static inline u64 vcpu_suspend_time_injected(struct kvm_vcpu *vcpu)
+{
+	return 0;
+}
+#endif /* CONFIG_KVM_VIRT_SUSPEND_TIMING */
 
 #endif
