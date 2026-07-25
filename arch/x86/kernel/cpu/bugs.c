@@ -54,6 +54,9 @@
  * mitigation option.
  */
 
+/* chromeos (FROMLIST): coresched=secure auto-disable on CPUs immune to MDS/L1TF */
+static void __init coresched_select(void);
+
 /* The base value of the SPEC_CTRL MSR without task-specific bits set */
 u64 x86_spec_ctrl_base;
 
@@ -160,6 +163,9 @@ static void __init cpu_print_attack_vectors(void)
 
 	if (cpu_attack_vector_mitigated(CPU_MITIGATE_GUEST_HOST))
 		pr_cont("guest_host, ");
+
+	/* chromeos (FROMLIST): update whether core-scheduling is needed. */
+	coresched_select();
 
 	if (cpu_attack_vector_mitigated(CPU_MITIGATE_GUEST_GUEST))
 		pr_cont("guest_guest, ");
@@ -2343,7 +2349,7 @@ static void update_stibp_strict(void)
 /* Update the static key controlling the evaluation of TIF_SPEC_IB */
 static void update_indir_branch_cond(void)
 {
-	if (sched_smt_active())
+	if (!IS_ENABLED(CONFIG_SCHED_CORE) && sched_smt_active())
 		static_branch_enable(&switch_to_cond_stibp);
 	else
 		static_branch_disable(&switch_to_cond_stibp);
@@ -3735,4 +3741,18 @@ ssize_t cpu_show_vmscape(struct device *dev, struct device_attribute *attr, char
 void __warn_thunk(void)
 {
 	WARN_ONCE(1, "Unpatched return thunk in use. This should not happen!\n");
+}
+
+/*
+ * When coresched=secure command line option is passed (default), disable core
+ * scheduling if CPU does not have MDS/L1TF vulnerability.
+ */
+static void __init coresched_select(void)
+{
+#ifdef CONFIG_SCHED_CORE
+	if (coresched_cmd_secure() &&
+	    !boot_cpu_has_bug(X86_BUG_MDS) &&
+	    !boot_cpu_has_bug(X86_BUG_L1TF))
+		static_branch_disable(&sched_coresched_supported);
+#endif
 }
