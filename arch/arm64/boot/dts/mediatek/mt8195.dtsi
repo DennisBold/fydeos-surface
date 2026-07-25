@@ -1434,7 +1434,6 @@
 			status = "disabled";
 		};
 
-<<<<<<< ours(6.19)
 		ufshci: ufshci@11270000 {
 			compatible = "mediatek,mt8195-ufshci";
 			reg = <0 0x11270000 0 0x2300>;
@@ -1471,8 +1470,6 @@
 			#thermal-sensor-cells = <1>;
 		};
 
-=======
->>>>>>> theirs(chromeos-6.12)
 		xhci1: usb@11290000 {
 			compatible = "mediatek,mt8195-xhci",
 				     "mediatek,mtk-xhci";
