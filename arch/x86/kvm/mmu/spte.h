@@ -99,6 +99,13 @@ static_assert(!(EPT_SPTE_MMU_WRITABLE & SHADOW_ACC_TRACK_SAVED_MASK));
 #undef SHADOW_ACC_TRACK_SAVED_MASK
 
 /*
+ * Indicates that the SPTE refers to a page with a valid refcount. Only
+ * available for TDP SPTEs, since bits 62:52 are reserved for PAE paging,
+ * including NPT PAE.
+ */
+#define SPTE_MMU_PAGE_REFCOUNTED	BIT_ULL(59)
+
+/*
  * Due to limited space in PTEs, the MMIO generation is a 19 bit subset of
  * the memslots generation and is derived as follows:
  *
@@ -368,6 +375,13 @@ static inline kvm_pfn_t spte_to_pfn(u64 pte)
 static inline bool is_accessed_spte(u64 spte)
 {
 	return spte & shadow_accessed_mask;
+}
+
+extern u64 __read_mostly shadow_refcounted_mask;
+
+static inline bool is_refcounted_page_spte(u64 spte)
+{
+	return !shadow_refcounted_mask || (spte & shadow_refcounted_mask);
 }
 
 static inline u64 get_rsvd_bits(struct rsvd_bits_validate *rsvd_check, u64 pte,

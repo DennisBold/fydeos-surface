@@ -40,6 +40,7 @@ u64 __read_mostly shadow_present_mask;
 u64 __read_mostly shadow_me_value;
 u64 __read_mostly shadow_me_mask;
 u64 __read_mostly shadow_acc_track_mask;
+u64 __read_mostly shadow_refcounted_mask;
 
 u64 __read_mostly shadow_nonpresent_or_rsvd_mask;
 u64 __read_mostly shadow_nonpresent_or_rsvd_lower_gfn_mask;
@@ -238,10 +239,13 @@ bool make_spte(struct kvm_vcpu *vcpu, struct kvm_mmu_page *sp,
 
 	if (level > PG_LEVEL_4K)
 		spte |= PT_PAGE_SIZE_MASK;
+	if (is_refcounted)
+		spte |= shadow_refcounted_mask;
 
 	if (kvm_x86_ops.get_mt_mask)
 		spte |= kvm_x86_call(get_mt_mask)(vcpu, gfn,
-						  kvm_is_mmio_pfn(pfn, &is_host_mmio));
+						  kvm_is_mmio_pfn(pfn, &is_host_mmio),
+						  slot);
 	if (host_writable)
 		spte |= shadow_host_writable_mask;
 	else
