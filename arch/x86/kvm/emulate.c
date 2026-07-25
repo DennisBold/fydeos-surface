@@ -1078,6 +1078,31 @@ static int em_fnstsw(struct x86_emulate_ctxt *ctxt)
 	return X86EMUL_CONTINUE;
 }
 
+static u8 simd_prefix_to_bytes(const struct x86_emulate_ctxt *ctxt,
+			       int simd_prefix)
+{
+	u8 bytes;
+
+	switch (ctxt->b) {
+	case 0x11:
+		/* movss xmm, m32 */
+		/* movsd xmm, m64 */
+		/* movups xmm, m128 */
+		if (simd_prefix == 0xf3) {
+			bytes = 4;
+			break;
+		} else if (simd_prefix == 0xf2) {
+			bytes = 8;
+			break;
+		}
+		fallthrough;
+	default:
+		bytes = 16;
+		break;
+	}
+	return bytes;
+}
+
 static void __decode_register_operand(struct x86_emulate_ctxt *ctxt,
 				      struct operand *op, int reg)
 {
@@ -1090,7 +1115,7 @@ static void __decode_register_operand(struct x86_emulate_ctxt *ctxt,
 	}
 	if (ctxt->d & (Avx|Sse)) {
 		op->type = OP_XMM;
-		op->bytes = 16;
+		op->bytes = ctxt->op_bytes;
 		op->addr.xmm = reg;
 		kvm_read_sse_reg(reg, &op->vec_val);
 		return;
@@ -4133,7 +4158,7 @@ static const struct gprefix pfx_0f_2b = {
 };
 
 static const struct gprefix pfx_0f_10_0f_11 = {
-	I(Unaligned, em_mov), I(Unaligned, em_mov), N, N,
+	I(Unaligned, em_mov), I(Unaligned, em_mov), I(Unaligned, em_mov), I(Unaligned, em_mov),
 };
 
 static const struct gprefix pfx_0f_28_0f_29 = {
@@ -5148,7 +5173,8 @@ done_modrm:
 		if (vex_prefix)
 			;
 		else if (ctxt->d & Sse)
-			ctxt->op_bytes = 16, ctxt->d &= ~Avx;
+			ctxt->op_bytes = simd_prefix_to_bytes(ctxt, simd_prefix),
+			ctxt->d &= ~Avx;
 		else if (ctxt->d & Mmx)
 			ctxt->op_bytes = 8;
 	}
