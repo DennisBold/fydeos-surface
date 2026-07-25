@@ -256,4 +256,6 @@ DEFINE_GUARD_COND(mutex, _intr, mutex_lock_interruptible(_T), _RET == 0)
 
 extern unsigned long mutex_get_owner(struct mutex *lock);
 
+extern unsigned long mutex_get_owner(struct mutex *lock);
+
 #endif /* __LINUX_MUTEX_H */

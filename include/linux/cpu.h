@@ -229,4 +229,5 @@ static inline bool cpu_attack_vector_mitigated(enum cpu_attack_vectors v)
 #define smt_mitigations SMT_MITIGATIONS_OFF
 #endif
 
+extern bool coresched_cmd_secure(void);
 #endif /* _LINUX_CPU_H_ */

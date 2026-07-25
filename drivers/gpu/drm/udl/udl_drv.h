@@ -21,6 +21,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_plane.h>
+#include "udl_cursor.h"
 
 struct drm_mode_create_dumb;
 
@@ -48,17 +49,20 @@ struct urb_list {
 	size_t size;
 };
 
+struct udl_cursor_hline;
 struct udl_device {
 	struct drm_device drm;
 
 	unsigned long sku_pixel_limit;
 
 	struct drm_plane primary_plane;
+	struct drm_plane cursor_plane;
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
 
 	struct urb_list urbs;
+	struct udl_cursor cursor;
 };
 
 #define to_udl(x) container_of(x, struct udl_device, drm)
@@ -82,7 +86,8 @@ int udl_init(struct udl_device *udl);
 
 int udl_render_hline(struct udl_device *udl, int log_bpp, struct urb **urb_ptr,
 		     const char *front, char **urb_buf_ptr,
-		     u32 byte_offset, u32 device_byte_offset, u32 byte_width);
+		     u32 byte_offset, u32 device_byte_offset, u32 byte_width,
+		     struct udl_cursor_hline *cursor_hline);
 
 int udl_drop_usb(struct udl_device *udl);
 int udl_select_std_channel(struct udl_device *udl);

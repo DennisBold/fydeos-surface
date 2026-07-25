@@ -144,7 +144,8 @@ __bpf_kfunc int bpf_get_dentry_xattr(struct dentry *dentry, const char *name__st
 	ret = bpf_xattr_read_permission(name__str, inode);
 	if (ret)
 		return ret;
-	return __vfs_getxattr(dentry, inode, name__str, value, value_len);
+	return __vfs_getxattr(&nop_mnt_idmap, dentry, inode, name__str, value,
+			      value_len, XATTR_NOSECURITY);
 }
 
 /**

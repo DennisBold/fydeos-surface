@@ -1076,7 +1076,11 @@ void batadv_tp_stop(struct batadv_priv *bat_priv, const u8 *dst,
 		goto out;
 	}
 
+	if (unlikely(tp_vars->role != BATADV_TP_SENDER))
+		goto out_put_tp_vars;
+
 	batadv_tp_sender_shutdown(tp_vars, return_value);
+out_put_tp_vars:
 	batadv_tp_vars_put(tp_vars);
 out:
 	batadv_orig_node_put(orig_node);

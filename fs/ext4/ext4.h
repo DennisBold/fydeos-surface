@@ -1626,9 +1626,6 @@ struct ext4_sb_info {
 	atomic_t s_mb_free_pending;
 	struct list_head s_freed_data_list[2];	/* List of blocks to be freed
 						   after commit completed */
-	struct list_head s_discard_list;
-	struct work_struct s_discard_work;
-	atomic_t s_retry_alloc_pending;
 	struct xarray *s_mb_avg_fragment_size;
 	struct xarray *s_mb_largest_free_orders;
 
