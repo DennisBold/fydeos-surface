@@ -278,6 +278,8 @@ static void i2c_acpi_register_device(struct i2c_adapter *adapter,
 				     struct acpi_device *adev,
 				     struct i2c_board_info *info)
 {
+	struct i2c_client *client;
+
 	/*
 	 * Skip registration on boards where the ACPI tables are
 	 * known to contain bogus I2C devices.
@@ -288,7 +290,15 @@ static void i2c_acpi_register_device(struct i2c_adapter *adapter,
 	adev->power.flags.ignore_parent = true;
 	acpi_device_set_enumerated(adev);
 
-	if (IS_ERR(i2c_new_client_device(adapter, info)))
+	if (!acpi_dev_get_property(adev, "linux,probed", ACPI_TYPE_ANY, NULL)) {
+		unsigned short addrs[] = { info->addr, I2C_CLIENT_END };
+
+		client = i2c_new_scanned_device(adapter, info, addrs, NULL);
+	} else {
+		client = i2c_new_client_device(adapter, info);
+	}
+
+	if (IS_ERR(client))
 		adev->power.flags.ignore_parent = false;
 }
 
@@ -662,6 +672,27 @@ static int acpi_gsb_i2c_write_bytes(struct i2c_client *client,
 	return (ret == 1) ? 0 : -EIO;
 }
 
+static int acpi_gsb_i2c_write_raw_bytes(struct i2c_client *client,
+		u8 *data, u8 data_len)
+{
+	struct i2c_msg msgs[1];
+	int ret;
+
+	msgs[0].addr = client->addr;
+	msgs[0].flags = client->flags;
+	msgs[0].len = data_len + 1;
+	msgs[0].buf = data;
+
+	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
+	if (ret < 0) {
+		dev_err(&client->adapter->dev, "i2c write failed: %d\n", ret);
+		return ret;
+	}
+
+	/* 1 transfer must have completed successfully */
+	return (ret == 1) ? 0 : -EIO;
+}
+
 static acpi_status
 i2c_acpi_space_handler(u32 function, acpi_physical_address command,
 			u32 bits, u64 *value64,
@@ -759,6 +790,19 @@ i2c_acpi_space_handler(u32 function, acpi_physical_address command,
 					gsb->data, info->access_length);
 		} else {
 			status = acpi_gsb_i2c_write_bytes(client, command,
+					gsb->data, info->access_length);
+		}
+		break;
+
+	case ACPI_GSB_ACCESS_ATTRIB_RAW_BYTES:
+		if (action == ACPI_READ) {
+			dev_warn(&adapter->dev,
+				 "protocol 0x%02x not supported for client 0x%02x\n",
+				 accessor_type, client->addr);
+			ret = AE_BAD_PARAMETER;
+			goto err;
+		} else {
+			status = acpi_gsb_i2c_write_raw_bytes(client,
 					gsb->data, info->access_length);
 		}
 		break;

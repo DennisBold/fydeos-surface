@@ -700,6 +700,25 @@ void v4l2_async_nf_cleanup(struct v4l2_async_notifier *notifier)
 }
 EXPORT_SYMBOL_GPL(v4l2_async_nf_cleanup);
 
+int __v4l2_async_nf_add_subdev(struct v4l2_async_notifier *notifier,
+			       struct v4l2_async_connection *asd)
+{
+	int ret;
+
+	mutex_lock(&list_lock);
+
+	ret = v4l2_async_nf_match_valid(notifier, &asd->match);
+	if (ret)
+		goto unlock;
+
+	list_add_tail(&asd->asc_entry, &notifier->waiting_list);
+
+unlock:
+	mutex_unlock(&list_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(__v4l2_async_nf_add_subdev);
+
 static void __v4l2_async_nf_add_connection(struct v4l2_async_notifier *notifier,
 					   struct v4l2_async_connection *asc)
 {
@@ -810,6 +829,10 @@ int __v4l2_async_register_subdev(struct v4l2_subdev *sd, struct module *module)
 	int ret;
 
 	INIT_LIST_HEAD(&sd->asc_list);
+
+	ret = v4l2_subdev_get_privacy_led(sd);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * No reference taken. The reference is held by the device (struct

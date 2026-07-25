@@ -6167,6 +6167,17 @@ static void apex_pci_fixup_class(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_CLASS_HEADER(0x1ac1, 0x089a,
 			       PCI_CLASS_NOT_DEFINED, 8, apex_pci_fixup_class);
 
+static void chromeos_internal_but_untrusted_device(struct pci_dev *pdev)
+{
+	if (dmi_match(DMI_SYS_VENDOR, "Google")) {
+		pci_info(pdev, "ChromeOS internal device marked untrusted\n");
+		pdev->untrusted = true;
+	}
+}
+/* 5G Modem on x86 systems (Brya onwards) */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK, 0x4d75,
+			chromeos_internal_but_untrusted_device);
+
 /*
  * Pericom PI7C9X2G404/PI7C9X2G304/PI7C9X2G303 switch erratum E5 -
  * ACS P2P Request Redirect is not functional
@@ -6377,3 +6388,39 @@ static void pci_mask_replay_timer_timeout(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9750, pci_mask_replay_timer_timeout);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9755, pci_mask_replay_timer_timeout);
 #endif
+
+static const struct dmi_system_id no_shutdown_dmi_table[] = {
+	/*
+	 * Systems on which some devices should not be touched during shutdown.
+	 */
+	{
+		.ident = "Microsoft Surface Pro 9",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Pro 9"),
+		},
+	},
+	{
+		.ident = "Microsoft Surface Laptop 5",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Laptop 5"),
+		},
+	},
+	{}
+};
+
+static void quirk_no_shutdown(struct pci_dev *dev)
+{
+	if (!dmi_check_system(no_shutdown_dmi_table))
+		return;
+
+	dev->no_shutdown = 1;
+	pci_info(dev, "disabling shutdown ops for [%04x:%04x]\n",
+		 dev->vendor, dev->device);
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x461e, quirk_no_shutdown);  // Thunderbolt 4 USB Controller
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x461f, quirk_no_shutdown);  // Thunderbolt 4 PCI Express Root Port
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x462f, quirk_no_shutdown);  // Thunderbolt 4 PCI Express Root Port
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x466d, quirk_no_shutdown);  // Thunderbolt 4 NHI
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x46a8, quirk_no_shutdown);  // GPU

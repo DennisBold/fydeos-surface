@@ -2325,10 +2325,39 @@ mwifiex_cfg80211_assoc(struct mwifiex_private *priv, size_t ssid_len,
 
 	/* Now handle infra mode. "sme" is valid for infra mode only */
 	if (sme->auth_type == NL80211_AUTHTYPE_AUTOMATIC) {
-		auth_type = NL80211_AUTHTYPE_OPEN_SYSTEM;
+		auth_type = WLAN_AUTH_OPEN;
 		priv->sec_info.is_authtype_auto = 1;
 	} else {
-		auth_type = sme->auth_type;
+		/* nl80211_auth_type and the driver's internal WLAN_AUTH_*
+		 * values are numerically different from SAE onwards
+		 * (e.g. NL80211_AUTHTYPE_SAE == 4, WLAN_AUTH_SAE == 3), so
+		 * the enum needs translating rather than being stored as-is.
+		 * Otherwise priv->sec_info.authentication_mode never compares
+		 * equal to WLAN_AUTH_SAE later on, the association command
+		 * TLV silently falls back to open-system authentication, and
+		 * WPA3/SAE connections fail on hardware that doesn't use the
+		 * host-MLME path (e.g. mwifiex 88W8897).
+		 */
+		switch (sme->auth_type) {
+		case NL80211_AUTHTYPE_OPEN_SYSTEM:
+			auth_type = WLAN_AUTH_OPEN;
+			break;
+		case NL80211_AUTHTYPE_SHARED_KEY:
+			auth_type = WLAN_AUTH_SHARED_KEY;
+			break;
+		case NL80211_AUTHTYPE_FT:
+			auth_type = WLAN_AUTH_FT;
+			break;
+		case NL80211_AUTHTYPE_NETWORK_EAP:
+			auth_type = WLAN_AUTH_LEAP;
+			break;
+		case NL80211_AUTHTYPE_SAE:
+			auth_type = WLAN_AUTH_SAE;
+			break;
+		default:
+			auth_type = sme->auth_type;
+			break;
+		}
 	}
 
 	if (sme->crypto.n_ciphers_pairwise) {
@@ -4682,6 +4711,93 @@ int mwifiex_init_channel_scan_gap(struct mwifiex_adapter *adapter)
 	return 0;
 }
 
+static const struct nla_policy
+mwifiex_vendor_attr_policy[NUM_MWIFIEX_VENDOR_CMD_ATTR] = {
+	[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_24] = { .type = NLA_U8 },
+	[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_52] = { .type = NLA_U8 },
+};
+
+static int mwifiex_parse_vendor_data(struct nlattr **tb,
+				     const void *data, int data_len)
+{
+	if (!data)
+		return -EINVAL;
+
+	return nla_parse(tb, MAX_MWIFIEX_VENDOR_CMD_ATTR, data, data_len,
+			 mwifiex_vendor_attr_policy, NULL);
+}
+
+static int mwifiex_vendor_set_tx_power_limt(struct wiphy *wiphy,
+					    struct wireless_dev *wdev,
+					    const void *data, int data_len)
+{
+	struct mwifiex_private *priv = mwifiex_netdev_get_priv(wdev->netdev);
+	struct nlattr *tb[NUM_MWIFIEX_VENDOR_CMD_ATTR];
+	int ret;
+	u8 lowpwr;
+
+	ret = mwifiex_parse_vendor_data(tb, data, data_len);
+	if (ret)
+		return ret;
+
+	if (tb[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_24]) {
+		lowpwr = nla_get_u8(tb[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_24]) ?
+				true : false;
+		if (lowpwr != priv->adapter->lowpwr_mode_2g4 &&
+		    priv->adapter->dt_node) {
+			ret = mwifiex_dnld_dt_cfgdata
+					(priv, priv->adapter->dt_node, lowpwr ?
+					 "marvell,caldata_00_txpwrlimit_2g" :
+					 "marvell,caldata_01_txpwrlimit_2g");
+			if (ret)
+				return -1;
+			priv->adapter->lowpwr_mode_2g4 = lowpwr;
+		}
+	}
+
+	if (tb[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_52]) {
+		lowpwr = nla_get_u8(tb[MWIFIEX_VENDOR_CMD_ATTR_TXP_LIMIT_52]) ?
+				true : false;
+		if (lowpwr != priv->adapter->lowpwr_mode_5g2 &&
+		    priv->adapter->dt_node) {
+			ret = mwifiex_dnld_dt_cfgdata
+					(priv, priv->adapter->dt_node, lowpwr ?
+					 "marvell,caldata_00_txpwrlimit_5g" :
+					 "marvell,caldata_01_txpwrlimit_5g");
+			if (ret)
+				return -1;
+			priv->adapter->lowpwr_mode_5g2 = lowpwr;
+		}
+	}
+
+	return 0;
+}
+
+static const struct wiphy_vendor_command mwifiex_vendor_commands[] = {
+	{
+		.info = {
+			.vendor_id = MWIFIEX_VENDOR_ID,
+			.subcmd = MWIFIEX_VENDOR_CMD_SET_TX_POWER_LIMIT,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV,
+		.doit = mwifiex_vendor_set_tx_power_limt,
+		.policy = mwifiex_vendor_attr_policy,
+		.maxattr = MAX_MWIFIEX_VENDOR_CMD_ATTR,
+	},
+};
+
+/* @brief register vendor commands and events
+ *
+ * @param wiphy       A pointer to wiphy struct
+ *
+ * @return
+ */
+static void mwifiex_register_cfg80211_vendor_command(struct wiphy *wiphy)
+{
+	wiphy->vendor_commands = mwifiex_vendor_commands;
+	wiphy->n_vendor_commands = ARRAY_SIZE(mwifiex_vendor_commands);
+}
+
 /*
  * This function registers the device with CFG802.11 subsystem.
  *
@@ -4752,6 +4868,8 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 
 	if (ISSUPP_ADHOC_ENABLED(adapter->fw_cap_info))
 		wiphy->interface_modes |= BIT(NL80211_IFTYPE_ADHOC);
+
+	mwifiex_register_cfg80211_vendor_command(wiphy);
 
 	wiphy->bands[NL80211_BAND_2GHZ] = devm_kmemdup(adapter->dev,
 						       &mwifiex_band_2ghz,
@@ -4886,16 +5004,15 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 				mwifiex_dbg(adapter, WARN,
 					    "Ignore world regulatory domain\n");
 			} else {
-				wiphy->regulatory_flags |=
-					REGULATORY_DISABLE_BEACON_HINTS |
-					REGULATORY_COUNTRY_IE_IGNORE;
 				country_code =
 					mwifiex_11d_code_2_region(
 						adapter->region_code);
-				if (country_code &&
-				    regulatory_hint(wiphy, country_code))
-					mwifiex_dbg(priv->adapter, ERROR,
-						    "regulatory_hint() failed\n");
+				if (country_code) {
+					mwifiex_dbg(priv->adapter, MSG,
+						    "ignoring EEPROM country code: %c%c\n",
+						    country_code[0],
+						    country_code[1]);
+				}
 			}
 		}
 	}

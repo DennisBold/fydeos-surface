@@ -21,9 +21,14 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&touchscreen_pins>;
 
+		interrupt-parent = <&pio>;
 		interrupts-extended = <&pio 155 IRQ_TYPE_LEVEL_LOW>;
 
 		post-power-on-delay-ms = <70>;
 		hid-descr-addr = <0x0001>;
 	};
+};
+
+&i2c2 {
+	mediatek,default-timing-adjust;
 };

@@ -692,9 +692,9 @@ static ssize_t backing_dev_store(struct device *dev,
 		return -ENOMEM;
 
 	down_write(&zram->init_lock);
-	if (init_done(zram)) {
-		pr_info("Can't setup backing device for initialized device\n");
-		err = -EBUSY;
+	if (zram->backing_dev) {
+		pr_info("Backing device is already assigned\n");
+		err = -EEXIST;
 		goto out;
 	}
 
@@ -2848,6 +2848,15 @@ static int zram_open(struct gendisk *disk, blk_mode_t mode)
 	struct zram *zram = disk->private_data;
 
 	WARN_ON(!mutex_is_locked(&disk->open_mutex));
+
+	/*
+	 * Chromium OS specific behavior:
+	 * swapon opens device once (the counter incremented after return).
+	 * We don't allow openers BEFORE nor AFTER swapon.  swapoff has a
+	 * special fallback logic to handle failed open().
+	 */
+	if (disk_openers(disk) > 0)
+		return -EBUSY;
 
 	/* zram was claimed to reset so open request fails */
 	if (zram->claim)
