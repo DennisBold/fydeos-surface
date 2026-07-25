@@ -1748,7 +1748,6 @@ static bool kvm_rmap_age_gfn_range(struct kvm *kvm,
 					cmpxchg64(sptep, spte,
 					      mark_spte_for_access_track(spte));
 				young = true;
-			}
 
 			kvm_rmap_unlock_readonly(rmap_head, rmap_val);
 		}
@@ -6604,6 +6603,10 @@ void kvm_configure_mmu(bool enable_tdp, int tdp_forced_root_level,
 
 #ifdef CONFIG_X86_64
 	tdp_mmu_enabled = tdp_mmu_allowed && tdp_enabled;
+
+	/* The SPTE_MMU_PAGE_REFCOUNTED bit is only available with EPT. */
+	if (enable_tdp)
+		shadow_refcounted_mask = SPTE_MMU_PAGE_REFCOUNTED;
 #endif
 	/*
 	 * max_huge_page_level reflects KVM's MMU capabilities irrespective
