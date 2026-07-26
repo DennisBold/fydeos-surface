@@ -670,6 +670,10 @@ struct ov8865_state {
 	const struct ov8865_mode *mode;
 	u32 mbus_code;
 
+	/* Mode currently programmed into the hardware, NULL when unpowered. */
+	const struct ov8865_mode *hw_mode;
+	u32 hw_mbus_code;
+
 	bool streaming;
 };
 
@@ -2383,6 +2387,9 @@ static int ov8865_sensor_init(struct ov8865_sensor *sensor)
 		return ret;
 	}
 
+	sensor->state.hw_mode = sensor->state.mode;
+	sensor->state.hw_mbus_code = sensor->state.mbus_code;
+
 	return 0;
 }
 
@@ -2618,11 +2625,33 @@ static int ov8865_s_stream(struct v4l2_subdev *subdev, int enable)
 	}
 
 	mutex_lock(&sensor->mutex);
+
+	/*
+	 * If something else kept the sensor powered (e.g. the VCM's PM
+	 * device link holding it active), runtime resume did not run when
+	 * streaming was requested and the hardware may still be programmed
+	 * for a previous mode. Reprogram it to match the current state.
+	 */
+	if (enable && (state->hw_mode != state->mode ||
+		       state->hw_mbus_code != state->mbus_code)) {
+		ret = ov8865_sensor_init(sensor);
+		if (!ret)
+			ret = __v4l2_ctrl_handler_setup(&sensor->ctrls.handler);
+		if (ret) {
+			mutex_unlock(&sensor->mutex);
+			pm_runtime_put(sensor->dev);
+			return ret;
+		}
+	}
+
 	ret = ov8865_sw_standby(sensor, !enable);
 	mutex_unlock(&sensor->mutex);
 
-	if (ret)
+	if (ret) {
+		if (enable)
+			pm_runtime_put(sensor->dev);
 		return ret;
+	}
 
 	state->streaming = !!enable;
 
@@ -2895,6 +2924,8 @@ static int ov8865_suspend(struct device *dev)
 	ret = ov8865_sensor_power(sensor, false);
 	if (ret)
 		ov8865_sw_standby(sensor, false);
+	else
+		state->hw_mode = NULL;
 
 complete:
 	mutex_unlock(&sensor->mutex);
