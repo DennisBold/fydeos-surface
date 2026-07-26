@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Red Hat
+ * Copyright (c) 2024 Synaptics Incorporated. All Rights Reserved.
  */
 
 #include <linux/module.h>
@@ -15,6 +16,7 @@
 #include <drm/drm_ioctl.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_print.h>
+#include <drm/drm_atomic_helper.h>
 
 #include "udl_drv.h"
 
