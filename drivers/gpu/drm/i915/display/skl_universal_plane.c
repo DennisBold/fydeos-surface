@@ -2311,6 +2311,11 @@ static void check_protection(struct intel_plane_state *plane_state)
 	plane_state->decrypt = intel_pxp_key_check(obj, false) == 0;
 	plane_state->force_black = intel_bo_is_protected(obj) &&
 		!plane_state->decrypt;
+
+	if (plane_state->force_black)
+		drm_err_ratelimited(&i915->drm,
+				    "PXP: plane %s force_black set! key_ret=%d\n",
+				    plane->base.name, key_ret);
 }
 
 static void
