@@ -33,11 +33,17 @@
 
 #include <linux/bits.h>
 #include <linux/device.h>
+#include <linux/delay.h>
+#include <linux/dmi.h>
 #include <linux/hid.h>
 #include <linux/module.h>
+#include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
+#include <linux/usb.h>
 #include <linux/input/mt.h>
 #include <linux/jiffies.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/timer.h>
 
@@ -48,6 +54,9 @@ MODULE_DESCRIPTION("HID multitouch panels");
 MODULE_LICENSE("GPL");
 
 #include "hid-ids.h"
+#include "usbhid/usbhid.h"
+
+#include "hid-haptic.h"
 
 #include "hid-haptic.h"
 
@@ -78,12 +87,18 @@ MODULE_LICENSE("GPL");
 #define MT_QUIRK_APPLE_TOUCHBAR		BIT(23)
 #define MT_QUIRK_YOGABOOK9I		BIT(24)
 #define MT_QUIRK_KEEP_LATENCY_ON_CLOSE	BIT(25)
+#define MT_QUIRK_HAS_TYPE_COVER_BACKLIGHT	BIT(26)
+#define MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH	BIT(27)
 
 #define MT_INPUTMODE_TOUCHSCREEN	0x02
 #define MT_INPUTMODE_TOUCHPAD		0x03
 
 #define MT_BUTTONTYPE_CLICKPAD		0
 #define MT_BUTTONTYPE_PRESSUREPAD	1
+
+#define MS_TYPE_COVER_FEATURE_REPORT_USAGE	0xff050086
+#define MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE	0xff050072
+#define MS_TYPE_COVER_APPLICATION	0xff050050
 
 enum latency_mode {
 	HID_LATENCY_NORMAL = 0,
@@ -148,6 +163,11 @@ struct mt_application {
 	int prev_scantime;		/* scantime reported previously */
 
 	bool have_contact_count;
+
+	bool pressure_emulate;	/* synthesize ABS_MT_PRESSURE for touchpads
+				 * that don't report a real pressure value */
+	__s32 fake_pressure;
+	int pressure_step;
 };
 
 struct mt_class {
@@ -170,6 +190,7 @@ struct mt_report_data {
 };
 
 struct mt_device {
+	struct list_head list;	/* for list of devices needing input handler */
 	struct mt_class mtclass;	/* our mt device class */
 	struct timer_list release_timer;	/* to release sticky fingers */
 	struct hid_haptic_device *haptic;	/* haptic related configuration */
@@ -188,7 +209,15 @@ struct mt_device {
 
 	struct list_head applications;
 	struct list_head reports;
+
+	struct notifier_block pm_notifier;
+	struct work_struct lid_work;
+	struct mutex mode_mutex;
+	bool lid_switch;
 };
+
+static struct workqueue_struct *mt_mode_wq;
+static LIST_HEAD(mt_devices_with_lid_handler);
 
 static void mt_post_parse_default_settings(struct mt_device *td,
 					   struct mt_application *app);
@@ -216,6 +245,7 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 #define MT_CLS_WIN_8_NO_STICKY_FINGERS		0x0017
 #define MT_CLS_WIN_8_FORCE_MULTI_INPUT_NSMU	0x0018
 #define MT_CLS_WIN_8_KEEP_LATENCY_ON_CLOSE	0x0019
+#define MT_CLS_GOODIX				0x001a
 
 /* vendor specific classes */
 #define MT_CLS_3M				0x0101
@@ -236,6 +266,7 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 #define MT_CLS_APPLE_TOUCHBAR			0x0114
 #define MT_CLS_YOGABOOK9I			0x0115
 #define MT_CLS_EGALAX_P80H84			0x0116
+#define MT_CLS_WIN_8_MS_SURFACE_TYPE_COVER	0x0117
 #define MT_CLS_SIS				0x0457
 
 #define MT_DEFAULT_MAXCONTACT	10
@@ -292,6 +323,14 @@ static const struct mt_class mt_classes[] = {
 		.quirks = MT_QUIRK_VALID_IS_INRANGE |
 			MT_QUIRK_SLOT_IS_CONTACTNUMBER },
 	{ .name = MT_CLS_WIN_8,
+		.quirks = MT_QUIRK_ALWAYS_VALID |
+			MT_QUIRK_IGNORE_DUPLICATES |
+			MT_QUIRK_HOVERING |
+			MT_QUIRK_CONTACT_CNT_ACCURATE |
+			MT_QUIRK_STICKY_FINGERS |
+			MT_QUIRK_WIN8_PTP_BUTTONS,
+		.export_all_inputs = true },
+	{ .name = MT_CLS_GOODIX,
 		.quirks = MT_QUIRK_ALWAYS_VALID |
 			MT_QUIRK_IGNORE_DUPLICATES |
 			MT_QUIRK_HOVERING |
@@ -455,7 +494,103 @@ static const struct mt_class mt_classes[] = {
 			MT_QUIRK_IGNORE_DUPLICATES |
 			MT_QUIRK_CONTACT_CNT_ACCURATE,
 	},
+	{ .name = MT_CLS_WIN_8_MS_SURFACE_TYPE_COVER,
+		.quirks = MT_QUIRK_HAS_TYPE_COVER_BACKLIGHT |
+			MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH |
+			MT_QUIRK_ALWAYS_VALID |
+			MT_QUIRK_IGNORE_DUPLICATES |
+			MT_QUIRK_HOVERING |
+			MT_QUIRK_CONTACT_CNT_ACCURATE |
+			MT_QUIRK_STICKY_FINGERS |
+			MT_QUIRK_WIN8_PTP_BUTTONS,
+		.export_all_inputs = true
+	},
 	{ }
+};
+
+static void mt_input_lid_event(struct input_handle *handle, unsigned int type,
+			     unsigned int code, int value)
+{
+	struct mt_device *td, *n;
+
+	if (type == EV_SW && code == SW_LID && !value) {
+		list_for_each_entry_safe(td, n, &mt_devices_with_lid_handler, list)
+			queue_work(mt_mode_wq, &td->lid_work);
+	}
+}
+
+struct mt_input_lid {
+	struct input_handle handle;
+};
+
+static int mt_input_lid_connect(struct input_handler *handler,
+				struct input_dev *dev,
+				const struct input_device_id *id)
+{
+	struct mt_input_lid *lid;
+	char *name;
+	int error;
+
+	lid = kzalloc(sizeof(*lid), GFP_KERNEL);
+	if (!lid)
+		return -ENOMEM;
+
+	name = kasprintf(GFP_KERNEL, "hid-mt-lid-%s", dev_name(&dev->dev));
+	if (!name) {
+		error = -ENOMEM;
+		goto err_free_lid;
+	}
+
+	lid->handle.dev = dev;
+	lid->handle.handler = handler;
+	lid->handle.name = name;
+	lid->handle.private = lid;
+
+	error = input_register_handle(&lid->handle);
+	if (error)
+		goto err_free_name;
+
+	error = input_open_device(&lid->handle);
+	if (error)
+		goto err_unregister_handle;
+
+	return 0;
+
+err_unregister_handle:
+	input_unregister_handle(&lid->handle);
+err_free_name:
+	kfree(name);
+err_free_lid:
+	kfree(lid);
+	return error;
+}
+
+static void mt_input_lid_disconnect(struct input_handle *handle)
+{
+	struct mt_input_lid *lid = handle->private;
+
+	input_close_device(handle);
+	input_unregister_handle(handle);
+
+	kfree(handle->name);
+	kfree(lid);
+}
+
+static const struct input_device_id mt_input_lid_ids[] = {
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT | INPUT_DEVICE_ID_MATCH_SWBIT,
+		.evbit = { BIT_MASK(EV_SW) },
+		.swbit = { [BIT_WORD(SW_LID)] = BIT_MASK(SW_LID) },
+	},
+	{ },
+};
+
+static struct input_handler mt_input_lid_handler = {
+	.event =	mt_input_lid_event,
+	.connect =	mt_input_lid_connect,
+	.disconnect =	mt_input_lid_disconnect,
+	.name =		"hid-mt-lid",
+	.id_table =	mt_input_lid_ids,
 };
 
 static ssize_t mt_show_quirks(struct device *dev,
@@ -625,6 +760,89 @@ static struct mt_usages *mt_allocate_usage(struct hid_device *hdev,
 	return usage;
 }
 
+static void mt_set_modes(struct hid_device *hdev, enum latency_mode latency,
+			 enum report_mode report_mode);
+
+static void lid_work_handler(struct work_struct *work)
+{
+
+	struct mt_device *td = container_of(work, struct mt_device,
+					    lid_work);
+	struct hid_device *hdev = td->hdev;
+
+	mutex_lock(&td->mode_mutex);
+	mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_NONE);
+	/* Elan's touchpad VID 323B needs this delay to handle both switch
+	 * surface off and switch surface on and trigger recalibration
+	 * properly.
+	 */
+	msleep(50);
+	mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_ALL);
+	mutex_unlock(&td->mode_mutex);
+}
+
+static const struct dmi_system_id mt_lid_handler_dmi_table[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Redrix"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Redrix4ES"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Vell"),
+		},
+	},
+	{}
+};
+
+static int mt_create_lid_handler(void)
+{
+	int error = 0;
+
+	if (!dmi_check_system(mt_lid_handler_dmi_table))
+		return 0;
+
+	mt_mode_wq = alloc_ordered_workqueue("hid-mt-lid", WQ_FREEZABLE);
+	if (mt_mode_wq == NULL)
+		return -ENOMEM;
+
+	error = input_register_handler(&mt_input_lid_handler);
+	if (error)
+		goto remove_wq;
+
+	return 0;
+
+remove_wq:
+	destroy_workqueue(mt_mode_wq);
+	mt_mode_wq = NULL;
+	return error;
+}
+
+static void mt_configure_lid_handler(struct mt_device *td)
+{
+	struct hid_device *hdev = td->hdev;
+
+	if (hdev->bus != BUS_I2C)
+		return;
+
+	td->lid_switch = true;
+	list_add_tail(&td->list, &mt_devices_with_lid_handler);
+}
+
+static void mt_destroy_lid_handler(void)
+{
+	input_unregister_handler(&mt_input_lid_handler);
+	destroy_workqueue(mt_mode_wq);
+}
+
 static struct mt_application *mt_allocate_application(struct mt_device *td,
 						      struct hid_report *report)
 {
@@ -648,6 +866,8 @@ static struct mt_application *mt_allocate_application(struct mt_device *td,
 	if (application == HID_DG_TOUCHPAD) {
 		mt_application->mt_flags |= INPUT_MT_POINTER;
 		td->inputmode_value = MT_INPUTMODE_TOUCHPAD;
+		if (mt_mode_wq)
+			mt_configure_lid_handler(td);
 	}
 
 	mt_application->scantime = DEFAULT_ZERO;
@@ -886,6 +1106,23 @@ static int mt_touch_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 						     MT_TOOL_PALM, 0, 0);
 
 			MT_STORE_FIELD(confidence_state);
+
+			/* Some Win8 touchpads never report a real pressure
+			 * value, which breaks tap-to-click / gesture code
+			 * that expects one. Synthesize a fake, cycling
+			 * pressure value for those instead.
+			 */
+			if (app->application == HID_DG_TOUCHPAD &&
+			    (cls->name == MT_CLS_DEFAULT ||
+			     cls->name == MT_CLS_WIN_8) &&
+			    !test_bit(ABS_MT_PRESSURE, hi->input->absbit)) {
+				app->pressure_emulate = true;
+				app->fake_pressure = 0;
+				input_set_abs_params(hi->input, ABS_MT_PRESSURE,
+						     0, 255, 0, 0);
+				mt_store_field(hdev, app, &app->fake_pressure,
+					       offsetof(struct mt_usages, p));
+			}
 			return 1;
 		case HID_DG_TOUCH:
 			/*
@@ -1054,8 +1291,16 @@ static void mt_release_pending_palms(struct mt_device *td,
 static void mt_sync_frame(struct mt_device *td, struct mt_application *app,
 			  struct input_dev *input)
 {
-	if (app->quirks & MT_QUIRK_WIN8_PTP_BUTTONS)
-		input_event(input, EV_KEY, BTN_LEFT, app->left_button_state);
+	if (td->is_haptic_touchpad)
+		hid_haptic_handle_press_release(td->haptic);
+
+	if (app->quirks & MT_QUIRK_WIN8_PTP_BUTTONS) {
+		if (!(td->is_haptic_touchpad &&
+		    hid_haptic_handle_input(td->haptic))) {
+			input_event(input, EV_KEY, BTN_LEFT,
+				    app->left_button_state);
+		}
+	}
 
 	input_mt_sync_frame(input);
 	input_event(input, EV_MSC, MSC_TIMESTAMP, app->timestamp);
@@ -1220,6 +1465,17 @@ static int mt_process_slot(struct mt_device *td, struct input_dev *input,
 
 		if (td->is_haptic_touchpad)
 			hid_haptic_pressure_increase(td->haptic, *slot->p);
+
+		if (app->pressure_emulate && slot->x) {
+			if (app->fake_pressure > 130)
+				app->pressure_step = -10;
+			else if (app->fake_pressure < 60)
+				app->pressure_step = 30;
+			else if (app->fake_pressure > 80)
+				app->pressure_step = 5;
+			app->fake_pressure += app->pressure_step;
+		}
+
 
 		x = hdev->quirks & HID_QUIRK_X_INVERT ?
 			input_abs_get_max(input, ABS_MT_POSITION_X) - *slot->x :
@@ -1489,6 +1745,9 @@ static int mt_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	    field->application != HID_CP_CONSUMER_CONTROL &&
 	    field->application != HID_GD_WIRELESS_RADIO_CTLS &&
 	    field->application != HID_GD_SYSTEM_MULTIAXIS &&
+	    !(field->application == MS_TYPE_COVER_APPLICATION &&
+	      application->quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH &&
+	      usage->hid == MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE) &&
 	    !(field->application == HID_VD_ASUS_CUSTOM_MEDIA_KEYS &&
 	      application->quirks & MT_QUIRK_ASUS_CUSTOM_UP))
 		return -1;
@@ -1513,6 +1772,21 @@ static int mt_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		default:
 			return -1;
 		}
+		return 1;
+	}
+
+	/*
+	 * The Microsoft Surface Pro Typecover has a non-standard HID
+	 * tablet mode switch on a vendor specific usage page with vendor
+	 * specific usage.
+	 */
+	if (field->application == MS_TYPE_COVER_APPLICATION &&
+	    application->quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH &&
+	    usage->hid == MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE) {
+		usage->type = EV_SW;
+		usage->code = SW_TABLET_MODE;
+		*max = SW_MAX;
+		*bit = hi->input->swbit;
 		return 1;
 	}
 
@@ -1542,10 +1816,24 @@ static int mt_input_mapped(struct hid_device *hdev, struct hid_input *hi,
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
 	struct mt_report_data *rdata;
+	struct input_dev *input;
 
 	rdata = mt_find_report_data(td, field->report);
 	if (rdata && rdata->is_mt_collection) {
 		/* We own these mappings, tell hid-input to ignore them */
+		return -1;
+	}
+
+	/*
+	 * We own an input device which acts as a tablet mode switch for
+	 * the Surface Pro Typecover.
+	 */
+	if (field->application == MS_TYPE_COVER_APPLICATION &&
+	    rdata->application->quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH &&
+	    usage->hid == MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE) {
+		input = hi->input;
+		input_set_capability(input, EV_SW, SW_TABLET_MODE);
+		input_report_switch(input, SW_TABLET_MODE, 0);
 		return -1;
 	}
 
@@ -1558,10 +1846,20 @@ static int mt_event(struct hid_device *hid, struct hid_field *field,
 {
 	struct mt_device *td = hid_get_drvdata(hid);
 	struct mt_report_data *rdata;
+	struct input_dev *input;
 
 	rdata = mt_find_report_data(td, field->report);
 	if (rdata && rdata->is_mt_collection)
 		return mt_touch_event(hid, field, usage, value);
+
+	if (field->application == MS_TYPE_COVER_APPLICATION &&
+	    rdata->application->quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH &&
+	    usage->hid == MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE) {
+		input = field->hidinput->input;
+		input_report_switch(input, SW_TABLET_MODE, (value & 0xFF) != 0x22);
+		input_sync(input);
+		return 1;
+	}
 
 	return 0;
 }
@@ -1777,6 +2075,42 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app)
 		app->quirks &= ~MT_QUIRK_CONTACT_CNT_ACCURATE;
 }
 
+static int get_type_cover_field(struct hid_report_enum *rep_enum,
+				struct hid_field **field, int usage)
+{
+	struct hid_report *rep;
+	struct hid_field *cur_field;
+	int i, j;
+
+	list_for_each_entry(rep, &rep_enum->report_list, list) {
+		for (i = 0; i < rep->maxfield; i++) {
+			cur_field = rep->field[i];
+			if (cur_field->application != MS_TYPE_COVER_APPLICATION)
+				continue;
+			for (j = 0; j < cur_field->maxusage; j++) {
+				if (cur_field->usage[j].hid == usage) {
+					*field = cur_field;
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+static void request_type_cover_tablet_mode_switch(struct hid_device *hdev)
+{
+	struct hid_field *field;
+
+	if (get_type_cover_field(&hdev->report_enum[HID_INPUT_REPORT],
+				 &field,
+				 MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE)) {
+		hid_hw_request(hdev, field->report, HID_REQ_GET_REPORT);
+	} else {
+		hid_err(hdev, "couldn't find tablet mode field\n");
+	}
+}
+
 static int mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
@@ -1835,6 +2169,13 @@ static int mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 		/* force BTN_STYLUS to allow tablet matching in udev */
 		__set_bit(BTN_STYLUS, hi->input->keybit);
 		break;
+	case MS_TYPE_COVER_APPLICATION:
+		if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH) {
+			suffix = "Tablet Mode Switch";
+			request_type_cover_tablet_mode_switch(hdev);
+			break;
+		}
+		fallthrough;
 	default:
 		suffix = "UNKNOWN";
 		break;
@@ -1945,6 +2286,46 @@ static void mt_expired_timeout(struct timer_list *t)
 	clear_bit_unlock(MT_IO_FLAGS_RUNNING, &td->mt_io_flags);
 }
 
+static void update_keyboard_backlight(struct hid_device *hdev, bool enabled)
+{
+	struct usb_device *udev = hid_to_usb_dev(hdev);
+	struct hid_field *field = NULL;
+
+	/* Wake up the device in case it's already suspended */
+	pm_runtime_get_sync(&udev->dev);
+
+	if (!get_type_cover_field(&hdev->report_enum[HID_FEATURE_REPORT],
+				  &field,
+				  MS_TYPE_COVER_FEATURE_REPORT_USAGE)) {
+		hid_err(hdev, "couldn't find backlight field\n");
+		goto out;
+	}
+
+	field->value[field->index] = enabled ? 0x01ff00ff : 0x00ff00ff;
+	hid_hw_request(hdev, field->report, HID_REQ_SET_REPORT);
+
+out:
+	pm_runtime_put_sync(&udev->dev);
+}
+
+static int mt_pm_notifier(struct notifier_block *notifier,
+			  unsigned long pm_event,
+			  void *unused)
+{
+	struct mt_device *td =
+		container_of(notifier, struct mt_device, pm_notifier);
+	struct hid_device *hdev = td->hdev;
+
+	if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_BACKLIGHT) {
+		if (pm_event == PM_SUSPEND_PREPARE)
+			update_keyboard_backlight(hdev, 0);
+		else if (pm_event == PM_POST_SUSPEND)
+			update_keyboard_backlight(hdev, 1);
+	}
+
+	return NOTIFY_DONE;
+}
+
 static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret, i;
@@ -1973,8 +2354,15 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	td->inputmode_value = MT_INPUTMODE_TOUCHSCREEN;
 	hid_set_drvdata(hdev, td);
 
+	td->pm_notifier.notifier_call = mt_pm_notifier;
+	register_pm_notifier(&td->pm_notifier);
+
 	INIT_LIST_HEAD(&td->applications);
 	INIT_LIST_HEAD(&td->reports);
+
+	INIT_LIST_HEAD(&td->list);
+	INIT_WORK(&td->lid_work, lid_work_handler);
+	mutex_init(&td->mode_mutex);
 
 	if (id->vendor == HID_ANY_ID && id->product == HID_ANY_ID)
 		td->serial_maybe = true;
@@ -2011,8 +2399,10 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	timer_setup(&td->release_timer, mt_expired_timeout, 0);
 
 	ret = hid_parse(hdev);
-	if (ret != 0)
+	if (ret != 0) {
+		unregister_pm_notifier(&td->pm_notifier);
 		return ret;
+	}
 
 	if (mtclass->name == MT_CLS_APPLE_TOUCHBAR &&
 	    !hid_find_field(hdev, HID_INPUT_REPORT,
@@ -2026,8 +2416,10 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		hdev->quirks |= HID_QUIRK_NOGET;
 
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
-	if (ret)
+	if (ret) {
+		unregister_pm_notifier(&td->pm_notifier);
 		return ret;
+	}
 
 	ret = sysfs_create_group(&hdev->dev.kobj, &mt_attribute_group);
 	if (ret)
@@ -2053,33 +2445,91 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 static int mt_suspend(struct hid_device *hdev, pm_message_t state)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
+	struct hid_haptic_device *haptic = td->haptic;
 
+	/* Wait for switch on completion */
+	if (td->lid_switch)
+		flush_workqueue(mt_mode_wq);
+
+	mutex_lock(&td->mode_mutex);
 	/* High latency is desirable for power savings during S3/S0ix */
 	if ((td->mtclass.quirks & MT_QUIRK_DISABLE_WAKEUP) ||
 	    !hid_hw_may_wakeup(hdev))
 		mt_set_modes(hdev, HID_LATENCY_HIGH, TOUCHPAD_REPORT_NONE);
 	else
 		mt_set_modes(hdev, HID_LATENCY_HIGH, TOUCHPAD_REPORT_ALL);
+	mutex_unlock(&td->mode_mutex);
+
+	if (td->is_haptic_touchpad)
+		hid_haptic_resume(hdev, haptic);
 
 	return 0;
 }
 
 static int mt_reset_resume(struct hid_device *hdev)
 {
+	struct mt_device *td = hid_get_drvdata(hdev);
+	struct hid_haptic_device *haptic = td->haptic;
+
 	mt_release_contacts(hdev);
+
+	mutex_lock(&td->mode_mutex);
 	mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_ALL);
+
+	/* Request an update on the typecover folding state on resume
+	 * after reset.
+	 */
+	if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH)
+		request_type_cover_tablet_mode_switch(hdev);
+	mutex_unlock(&td->mode_mutex);
+
+	if (td->is_haptic_touchpad)
+		hid_haptic_resume(hdev, haptic);
+
 	return 0;
 }
 
 static int mt_resume(struct hid_device *hdev)
 {
+	struct mt_device *td = hid_get_drvdata(hdev);
+	struct hid_haptic_device *haptic = td->haptic;
+
 	/* Some Elan legacy devices require SET_IDLE to be set on resume.
 	 * It should be safe to send it to other devices too.
 	 * Tested on 3M, Stantum, Cypress, Zytronic, eGalax, and Elan panels. */
 
 	hid_hw_idle(hdev, 0, 0, HID_REQ_SET_IDLE);
 
+	mutex_lock(&td->mode_mutex);
 	mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_ALL);
+
+	/* Request an update on the typecover folding state on resume. */
+	if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH)
+		request_type_cover_tablet_mode_switch(hdev);
+	mutex_unlock(&td->mode_mutex);
+
+	if (td->is_haptic_touchpad)
+		hid_haptic_suspend(hdev, haptic);
+
+	return 0;
+}
+
+static int mt_reset(struct hid_device *hdev)
+{
+	struct mt_device *td = hid_get_drvdata(hdev);
+
+	if (!td)
+		return 0;
+
+	if (td->is_haptic_touchpad) {
+		mt_release_contacts(hdev);
+		mt_set_modes(hdev, HID_LATENCY_NORMAL, TOUCHPAD_REPORT_ALL);
+		hid_haptic_reset(hdev, td->haptic);
+	}
+
+	/* Request an update on the typecover folding state on resume. */
+	if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH)
+		request_type_cover_tablet_mode_switch(hdev);
 
 	return 0;
 }
@@ -2087,11 +2537,29 @@ static int mt_resume(struct hid_device *hdev)
 static void mt_remove(struct hid_device *hdev)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
+	struct hid_field *field;
+	struct input_dev *input;
 
+	/* Reset tablet mode switch on disconnect. */
+	if (td->mtclass.quirks & MT_QUIRK_HAS_TYPE_COVER_TABLET_MODE_SWITCH) {
+		if (get_type_cover_field(&hdev->report_enum[HID_INPUT_REPORT],
+					 &field,
+					 MS_TYPE_COVER_TABLET_MODE_SWITCH_USAGE)) {
+			input = field->hidinput->input;
+			input_report_switch(input, SW_TABLET_MODE, 0);
+			input_sync(input);
+		} else {
+			hid_err(hdev, "couldn't find tablet mode field\n");
+		}
+	}
+
+	unregister_pm_notifier(&td->pm_notifier);
 	timer_delete_sync(&td->release_timer);
 
 	sysfs_remove_group(&hdev->dev.kobj, &mt_attribute_group);
 	hid_hw_stop(hdev);
+
+	list_del(&td->list);
 }
 
 static void mt_on_hid_hw_open(struct hid_device *hdev)
@@ -2555,6 +3023,11 @@ static const struct hid_device_id mt_devices[] = {
 		HID_USB_DEVICE(USB_VENDOR_ID_APPLE,
 			USB_DEVICE_ID_APPLE_TOUCHBAR_DISPLAY) },
 
+	/* Microsoft Surface type cover */
+	{ .driver_data = MT_CLS_WIN_8_MS_SURFACE_TYPE_COVER,
+		HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY,
+			USB_VENDOR_ID_MICROSOFT, 0x09c0) },
+
 	/* Google MT devices */
 	{ .driver_data = MT_CLS_GOOGLE,
 		HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY, USB_VENDOR_ID_GOOGLE,
@@ -2572,6 +3045,52 @@ static const struct hid_device_id mt_devices[] = {
 	{ .driver_data = MT_CLS_NSMU,
 		HID_DEVICE(BUS_I2C, HID_GROUP_MULTITOUCH_WIN_8,
 			   I2C_VENDOR_ID_HANTICK, I2C_PRODUCT_ID_HANTICK_5288) },
+
+	/* Microsoft Type/Touch Covers and Surface accessory keyboards */
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TOUCH_COVER_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE3_COVER) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3_JP) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_3_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_4) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_TYPE_COVER_PRO_4_1) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_BOOK) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_BOOK_2) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_SURFACE_GO) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY,
+			USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_SURFACE_VHF) },
+	{ .driver_data = MT_CLS_EXPORT_ALL_INPUTS,
+		MT_USB_DEVICE(USB_VENDOR_ID_MICROSOFT,
+			USB_DEVICE_ID_MS_POWER_COVER) },
+
+	/* Goodix/Weibu Win8 touchpad */
+	{ .driver_data = MT_CLS_GOODIX,
+		HID_DEVICE(BUS_I2C, HID_GROUP_MULTITOUCH_WIN_8,
+			I2C_VENDOR_ID_GOODIX, I2C_DEVICE_ID_WEIBU) },
 
 	/* Generic MT device */
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_MULTITOUCH, HID_ANY_ID, HID_ANY_ID) },
@@ -2604,8 +3123,33 @@ static struct hid_driver mt_driver = {
 	.report = mt_report,
 	.suspend = pm_ptr(mt_suspend),
 	.reset_resume = pm_ptr(mt_reset_resume),
+	.reset = mt_reset,
 	.resume = pm_ptr(mt_resume),
 	.on_hid_hw_open = mt_on_hid_hw_open,
 	.on_hid_hw_close = mt_on_hid_hw_close,
 };
-module_hid_driver(mt_driver);
+
+static int __init hid_mt_init(void)
+{
+	int ret;
+
+	ret = hid_register_driver(&mt_driver);
+	if (ret)
+		return ret;
+
+	ret = mt_create_lid_handler();
+	if (ret)
+		hid_unregister_driver(&mt_driver);
+
+	return ret;
+}
+module_init(hid_mt_init);
+
+static void __exit hid_mt_exit(void)
+{
+	if (mt_mode_wq)
+		mt_destroy_lid_handler();
+
+	hid_unregister_driver(&mt_driver);
+}
+module_exit(hid_mt_exit);
