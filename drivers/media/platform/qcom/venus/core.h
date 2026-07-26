@@ -285,6 +285,10 @@ struct venc_controls {
 	u32 h264_hier_layers;
 	u32 h264_hier_layer_bitrate[VIDC_MAX_HIER_CODING_LAYER];
 
+	u32 h264_hier_enabled;
+	u32 h264_hier_p_layers;
+	u32 h264_hier_p_bitrate[6];
+
 	u32 hevc_i_qp;
 	u32 hevc_p_qp;
 	u32 hevc_b_qp;
