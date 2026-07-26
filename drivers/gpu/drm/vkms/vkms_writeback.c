@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0+
 
 #include <linux/iosys-map.h>
+#include <linux/kernel.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_edid.h>
@@ -138,15 +139,15 @@ static void vkms_wb_atomic_commit(struct drm_connector *conn,
 	struct vkms_frame_info *wb_frame_info;
 	u32 wb_format = fb->format->format;
 
-	if (!conn_state)
+	if (!connector_state)
 		return;
 
 	vkms_set_composer(output, true);
 
-	active_wb = conn_state->writeback_job->priv;
+	active_wb = connector_state->writeback_job->priv;
 	wb_frame_info = &active_wb->wb_frame_info;
 
-	spin_lock_irq(&output->composer_lock);
+	spin_lock_irq(&vkms_crtc->composer_lock);
 	crtc_state->active_writeback = active_wb;
 	crtc_state->wb_pending = true;
 	spin_unlock_irq(&output->composer_lock);

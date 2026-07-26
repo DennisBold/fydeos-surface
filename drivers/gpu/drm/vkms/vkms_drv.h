@@ -3,6 +3,8 @@
 #ifndef _VKMS_DRV_H_
 #define _VKMS_DRV_H_
 
+#include "drm/drm_connector.h"
+#include <linux/configfs.h>
 #include <linux/hrtimer.h>
 
 #include <drm/drm.h>
@@ -10,6 +12,7 @@
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_plane.h>
 #include <drm/drm_writeback.h>
 
 #define DEFAULT_DEVICE_NAME "vkms"
@@ -24,6 +27,10 @@
 #define YRES_MAX  8192
 
 #define NUM_OVERLAY_PLANES 8
+
+
+#define VKMS_MAX_OUTPUT_OBJECTS 16
+#define VKMS_MAX_PLANES (3 * VKMS_MAX_OUTPUT_OBJECTS)
 
 #define VKMS_LUT_SIZE 256
 
@@ -158,6 +165,27 @@ struct vkms_plane {
 	struct drm_plane base;
 };
 
+struct vkms_crtc {
+	struct drm_crtc base;
+
+	struct drm_writeback_connector wb_connector;
+	struct hrtimer vblank_hrtimer;
+	ktime_t period_ns;
+	struct drm_pending_vblank_event *event;
+	/* ordered wq for composer_work */
+	struct workqueue_struct *composer_workq;
+	/* protects concurrent access to composer */
+	spinlock_t lock;
+	/* guarantees that if the composer is enabled, a job will be queued */
+	struct mutex enabled_lock;
+
+	/* protected by @enabled_lock */
+	bool composer_enabled;
+	struct vkms_crtc_state *composer_state;
+
+	spinlock_t composer_lock;
+};
+
 struct vkms_color_lut {
 	struct drm_color_lut *base;
 	size_t lut_length;
@@ -254,6 +282,9 @@ struct vkms_device {
 
 #define drm_device_to_vkms_device(target) \
 	container_of(target, struct vkms_device, drm)
+
+#define timer_to_vkms_crtc(timer) \
+	container_of(timer, struct vkms_crtc, vblank_hrtimer)
 
 #define to_vkms_crtc_state(target)\
 	container_of(target, struct vkms_crtc_state, base)

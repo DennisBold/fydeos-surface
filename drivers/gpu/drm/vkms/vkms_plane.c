@@ -2,6 +2,7 @@
 
 #include "vkms_config.h"
 #include <linux/iosys-map.h>
+#include <linux/stdarg.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -95,6 +96,20 @@ static void vkms_plane_destroy_state(struct drm_plane *plane,
 	kfree(vkms_state);
 }
 
+static void vkms_plane_destroy(struct drm_plane *plane)
+{
+	struct vkms_plane *vkms_plane =
+		container_of(plane, struct vkms_plane, base);
+
+	if (plane->state) {
+		vkms_plane_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
+	drm_plane_cleanup(plane);
+	memset(vkms_plane, 0, sizeof(struct vkms_plane));
+}
+
 static void vkms_plane_reset(struct drm_plane *plane)
 {
 	struct vkms_plane_state *vkms_state;
@@ -116,9 +131,10 @@ static void vkms_plane_reset(struct drm_plane *plane)
 static const struct drm_plane_funcs vkms_plane_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
+	.destroy = vkms_plane_destroy,
 	.reset			= vkms_plane_reset,
 	.atomic_duplicate_state = vkms_plane_duplicate_state,
-	.atomic_destroy_state	= vkms_plane_destroy_state,
+	.atomic_destroy_state = vkms_plane_destroy_state,
 };
 
 static void vkms_plane_atomic_update(struct drm_plane *plane,
@@ -222,7 +238,13 @@ struct vkms_plane *vkms_plane_init(struct vkms_device *vkmsdev,
 				   struct vkms_config_plane *plane_cfg)
 {
 	struct drm_device *dev = &vkmsdev->drm;
+	struct vkms_output *output = &vkmsdev->output;
 	struct vkms_plane *plane;
+	va_list va;
+	int ret;
+
+	if (output->num_planes >= VKMS_MAX_PLANES)
+		return ERR_PTR(-ENOMEM);
 
 	plane = drmm_universal_plane_alloc(dev, struct vkms_plane, base, 0,
 					   &vkms_plane_funcs,

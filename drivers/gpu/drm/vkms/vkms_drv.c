@@ -9,6 +9,10 @@
  * the GPU in DRM API tests.
  */
 
+#include <linux/configfs.h>
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
+#include <linux/err.h>
 #include <linux/module.h>
 #include <linux/device/faux.h>
 #include <linux/dma-mapping.h>
@@ -38,19 +42,26 @@
 #define DRIVER_MAJOR	1
 #define DRIVER_MINOR	0
 
-static struct vkms_config *default_config;
+static bool enable_default_device = true;
+module_param_named(enable_default_device, enable_default_device, bool, 0444);
+MODULE_PARM_DESC(enable_default_device,
+		 "Enable/Disable creating the default device");
 
 static bool enable_cursor = true;
 module_param_named(enable_cursor, enable_cursor, bool, 0444);
-MODULE_PARM_DESC(enable_cursor, "Enable/Disable cursor support");
+MODULE_PARM_DESC(enable_cursor,
+		 "Enable/Disable cursor support for the default device");
 
 static bool enable_writeback = true;
 module_param_named(enable_writeback, enable_writeback, bool, 0444);
-MODULE_PARM_DESC(enable_writeback, "Enable/Disable writeback connector support");
+MODULE_PARM_DESC(
+	enable_writeback,
+	"Enable/Disable writeback connector support for the default device");
 
 static bool enable_overlay;
 module_param_named(enable_overlay, enable_overlay, bool, 0444);
-MODULE_PARM_DESC(enable_overlay, "Enable/Disable overlay support");
+MODULE_PARM_DESC(enable_overlay,
+		 "Enable/Disable overlay support for the default device");
 
 static bool enable_plane_pipeline;
 module_param_named(enable_plane_pipeline, enable_plane_pipeline, bool, 0444);
@@ -146,10 +157,9 @@ static int vkms_modeset_init(struct vkms_device *vkmsdev)
 	dev->mode_config.max_height = YRES_MAX;
 	dev->mode_config.cursor_width = 512;
 	dev->mode_config.cursor_height = 512;
-	/*
-	 * FIXME: There's a confusion between bpp and depth between this and
+	/* FIXME: There's a confusion between bpp and depth between this and
 	 * fbdev helpers. We have to go with 0, meaning "pick the default",
-	 * which is XRGB8888 in all cases.
+	 * which ix XRGB8888 in all cases.
 	 */
 	dev->mode_config.preferred_depth = 0;
 	dev->mode_config.helper_private = &vkms_mode_config_helpers;
@@ -178,7 +188,7 @@ int vkms_create(struct vkms_config *config)
 					 struct vkms_device, drm);
 	if (IS_ERR(vkms_device)) {
 		ret = PTR_ERR(vkms_device);
-		goto out_devres;
+		goto out_release_group;
 	}
 	vkms_device->faux_dev = fdev;
 	vkms_device->config = config;
@@ -189,25 +199,29 @@ int vkms_create(struct vkms_config *config)
 
 	if (ret) {
 		DRM_ERROR("Could not initialize DMA support\n");
-		goto out_devres;
+		goto out_release_group;
 	}
 
 	ret = drm_vblank_init(&vkms_device->drm,
 			      vkms_config_get_num_crtcs(config));
 	if (ret) {
-		DRM_ERROR("Failed to vblank\n");
-		goto out_devres;
+		DRM_ERROR("Unable to initialize modesetting\n");
+		goto out_release_group;
 	}
 
-	ret = vkms_modeset_init(vkms_device);
-	if (ret)
-		goto out_devres;
+	ret = drm_vblank_init(&vkms_device->drm, vkms_device->output.num_crtcs);
+	if (ret) {
+		DRM_ERROR("Failed to vblank\n");
+		goto out_release_group;
+	}
 
 	vkms_config_register_debugfs(vkms_device);
 
 	ret = drm_dev_register(&vkms_device->drm, 0);
-	if (ret)
-		goto out_devres;
+	if (ret) {
+		DRM_ERROR("Unable to register device with id %d\n", pdev->id);
+		goto out_release_group;
+	}
 
 	drm_client_setup(&vkms_device->drm, NULL);
 
@@ -220,10 +234,9 @@ out_unregister:
 	return ret;
 }
 
-static int __init vkms_init(void)
+static void vkms_platform_remove(struct platform_device *pdev)
 {
-	int ret;
-	struct vkms_config *config;
+	struct vkms_device *vkms_device;
 
 	ret = vkms_configfs_register();
 	if (ret)
@@ -243,18 +256,25 @@ static int __init vkms_init(void)
 		return ret;
 	}
 
-	default_config = config;
+	pdev = platform_device_register_data(NULL, DRIVER_NAME, max_id + 1,
+					     &vkms_device_setup,
+					     sizeof(vkms_device_setup));
+	if (IS_ERR(pdev)) {
+		DRM_ERROR("Unable to register vkms device'\n");
+		return ERR_PTR(PTR_ERR(pdev));
+	}
 
-	return 0;
+	return platform_get_drvdata(pdev);
 }
 
 void vkms_destroy(struct vkms_config *config)
 {
 	struct faux_device *fdev;
 
-	if (!config->dev) {
-		DRM_INFO("vkms_device is NULL.\n");
-		return;
+	ret = platform_driver_register(&vkms_platform_driver);
+	if (ret) {
+		DRM_ERROR("Unable to register platform driver\n");
+		return ret;
 	}
 
 	fdev = config->dev->faux_dev;
@@ -265,7 +285,7 @@ void vkms_destroy(struct vkms_config *config)
 	devres_release_group(&fdev->dev, NULL);
 	faux_device_destroy(fdev);
 
-	config->dev = NULL;
+	return 0;
 }
 
 static void __exit vkms_exit(void)
