@@ -352,6 +352,14 @@ static inline struct intel_gt *to_gt(const struct drm_i915_private *i915)
 	return i915->gt[0];
 }
 
+#define PRELIM_DRM_IOCTL_DEF_DRV(ioctl, _func, _flags)			\
+	[DRM_IOCTL_NR(PRELIM_DRM_IOCTL_##ioctl) - DRM_COMMAND_BASE] = {	\
+		.cmd = PRELIM_DRM_IOCTL_##ioctl,			\
+		.func = _func,						\
+		.flags = _flags,					\
+		.name = #ioctl						\
+	}
+
 #define INTEL_INFO(i915)	((i915)->__info)
 #define RUNTIME_INFO(i915)	(&(i915)->__runtime)
 #define DRIVER_CAPS(i915)	(&(i915)->caps)
