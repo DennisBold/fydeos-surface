@@ -301,6 +301,9 @@ void drm_debugfs_init_root(void)
 #if IS_ENABLED(CONFIG_DRM_ACCEL)
 	accel_debugfs_root = debugfs_create_dir("accel", NULL);
 #endif
+
+	debugfs_create_bool("drm_master_relax", S_IRUSR | S_IWUSR,
+			    drm_debugfs_root, &drm_master_relax);
 }
 
 void drm_debugfs_remove_root(void)

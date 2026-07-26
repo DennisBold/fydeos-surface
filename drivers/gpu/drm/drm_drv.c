@@ -1215,6 +1215,9 @@ out:
 	return err;
 }
 
+/* When set to true, allow set/drop master ioctls as normal user */
+bool drm_master_relax;
+
 static const struct file_operations drm_stub_fops = {
 	.owner = THIS_MODULE,
 	.open = drm_stub_open,
@@ -1231,11 +1234,14 @@ static void drm_core_exit(void)
 	drm_sysfs_destroy();
 	WARN_ON(!xa_empty(&drm_minors_xa));
 	drm_connector_ida_destroy();
+	drm_trace_cleanup();
 }
 
 static int __init drm_core_init(void)
 {
 	int ret;
+
+	drm_trace_init();
 
 	drm_connector_ida_init();
 	drm_memcpy_init_early();
