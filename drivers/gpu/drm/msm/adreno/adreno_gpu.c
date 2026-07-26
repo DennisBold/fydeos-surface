@@ -940,9 +940,11 @@ void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
 			adreno_gpu->info->revn,
 			ADRENO_CHIPID_ARGS(adreno_gpu->chip_id));
 	/*
-	 * If this is state collected due to iova fault, so fault related info
+	 * If this is state collected due to iova fault, show fault related
+	 * info
 	 *
-	 * TTBR0 would not be zero, so this is a good way to distinguish
+	 * TTBR0 would not be zero in this case, so this is a good way to
+	 * distinguish
 	 */
 	if (state->fault_info.ttbr0) {
 		const struct msm_gpu_fault_info *info = &state->fault_info;
