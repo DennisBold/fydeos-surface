@@ -923,6 +923,12 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_FLAG_PREMUL_ALPHA	0x00000001
 #define V4L2_PIX_FMT_FLAG_SET_CSC	0x00000002
 
+/* Vendor specific - used for IPU3 camera sub-system */
+#define V4L2_META_FMT_IPU3_PARAMS	v4l2_fourcc('i', 'p', '3', 'p') /* IPU3 params */
+#define V4L2_META_FMT_IPU3_STAT_3A	v4l2_fourcc('i', 'p', '3', 's') /* IPU3 3A statistics */
+#define V4L2_META_FMT_IPU3_STAT_DVS	v4l2_fourcc('i', 'p', '3', 'd') /* IPU3 DVS statistics */
+#define V4L2_META_FMT_IPU3_STAT_LACE	v4l2_fourcc('i', 'p', '3', 'l') /* IPU3 LACE statistics */
+
 /*
  *	F O R M A T   E N U M E R A T I O N
  */
